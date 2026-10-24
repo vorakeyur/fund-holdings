@@ -224,6 +224,8 @@ export function shape(p, bands) {
     // % of the fund. Every company is kept: overlap needs the full list.
     equity: equity.sort((a, b) => b[3] - a[3]).map(([i, n, s, v, c]) => [i, n, s, round(v, 3), c]),
     ratings: debtTotal > 0 ? Object.fromEntries(Object.entries(ratings).map(([k, v]) => [k, round(v / debtTotal)])) : null,
+    // The share of the fund in rated paper — what `ratings` is a share of.
+    rated: round(Math.max(0, debtTotal) / 100),
     debt: debt.sort((a, b) => b[2] - a[2]).slice(0, 25).map(([n, r, v, mat]) => [n, r, round(v, 3), mat]),
   };
 }
