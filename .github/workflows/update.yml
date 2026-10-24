@@ -1,0 +1,53 @@
+name: Update fund holdings
+
+on:
+  schedule:
+    - cron: '30 2 * * 1' # Mondays, 08:00 India time
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # the last-run note below
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Check the rules
+        run: node test.mjs
+      - name: Build
+        run: node build.mjs
+        env:
+          PREVIOUS_BASE: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      # GitHub switches off scheduled jobs in a public repository after 60 days without a
+      # commit. Recording each run keeps this one alive.
+      - name: Note the run
+        run: |
+          date -u +%Y-%m-%dT%H:%MZ > last-run.txt
+          git config user.name "holdings-bot"
+          git config user.email "holdings-bot@users.noreply.github.com"
+          git add last-run.txt
+          git commit -m "Weekly holdings update" || true
+          git push || true
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
