@@ -232,6 +232,57 @@ export function shape(p, bands) {
 
 const round = (n, d = 4) => Math.round(n * 10 ** d) / 10 ** d;
 
+// ------------------------------------------------------------------------- shares held directly
+// So Fund X-ray can add shares bought directly to what the funds hold: an NSE symbol → ISIN, an
+// ETF's symbol → its AMFI scheme code (its portfolio is then one of the files above), and per
+// ISIN the company name, sector and size band. Sector is how the fund houses classify the company
+// — the most common label across every portfolio that holds it.
+const votes = new Map(); // ISIN → Map(sector → count)
+
+function parseCsv(text) {
+  const lines = text.trim().split(/\r?\n/);
+  const head = lines[0].split(',').map((h) => h.trim().toUpperCase());
+  return lines.slice(1).map((l) => {
+    const cells = l.split(',');
+    return Object.fromEntries(head.map((h, i) => [h, (cells[i] ?? '').trim()]));
+  });
+}
+
+async function writeStocks(catalog, bands) {
+  try {
+    const equities = parseCsv(await get('https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv', 'text'));
+    const etfs = parseCsv(await get('https://nsearchives.nseindia.com/content/equities/eq_etfseclist.csv', 'text'));
+    if (equities.length < 1500) throw new Error(`NSE equity list looks wrong: ${equities.length}`);
+
+    const codeByIsin = new Map();
+    for (const r of Object.values(catalog)) if (r?.isin && r.amfi_code) codeByIsin.set(String(r.isin).toUpperCase(), String(r.amfi_code));
+
+    const nse = {};
+    const isin = {};
+    for (const r of equities) {
+      const sym = r.SYMBOL;
+      const i = (r['ISIN NUMBER'] || '').toUpperCase();
+      if (!sym || !/^IN[A-Z0-9]{10}$/.test(i)) continue;
+      nse[sym] = i;
+      const v = votes.get(i);
+      const sector = v ? [...v.entries()].sort((a, b) => b[1] - a[1])[0][0] : 'Unclassified';
+      isin[i] = [r['NAME OF COMPANY'], sector, bands.get(i) ?? 'S'];
+    }
+    const etf = {};
+    for (const r of etfs) {
+      const code = codeByIsin.get((r.ISINNUMBER || '').toUpperCase());
+      if (r.SYMBOL && code) etf[r.SYMBOL] = code;
+    }
+    await writeFile(`${OUT}/stocks.json`, JSON.stringify({ v: 1, generatedAt: new Date().toISOString(), nse, etf, isin }));
+    console.log(`stocks: ${Object.keys(nse).length} NSE shares, ${Object.keys(etf).length} ETFs mapped to AMFI codes`);
+  } catch (e) {
+    // Keep last week's lookup rather than publishing none.
+    console.log(`stocks: ${e.message} — keeping the previous lookup`);
+    const prev = PREVIOUS_BASE ? await get(`${PREVIOUS_BASE}/v1/stocks.json`).catch(() => null) : null;
+    if (prev) await writeFile(`${OUT}/stocks.json`, JSON.stringify(prev));
+  }
+}
+
 // ---------------------------------------------------------------------------------- main
 async function main() {
   const catalog = await get(`${UPSTREAM}/catalog/amfi-lookup.json`);
@@ -277,9 +328,17 @@ async function main() {
     }
     if (out) {
       asOf[id] = out.asOf;
+      for (const [isin, , sector] of out.equity ?? []) {
+        if (!isin || sector === 'Unclassified' || sector === 'Foreign equity') continue;
+        const v = votes.get(isin) ?? new Map();
+        v.set(sector, (v.get(sector) ?? 0) + 1);
+        votes.set(isin, v);
+      }
       await writeFile(`${OUT}/p/${id}.json`, JSON.stringify(out));
     }
   });
+
+  await writeStocks(catalog, bands);
 
   for (const [code, id] of Object.entries(schemes)) if (!asOf[id]) delete schemes[code];
   await writeFile(
